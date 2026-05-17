@@ -6,7 +6,7 @@ class AuggieAdapter(StaticAdapter):
         super().__init__(
             agent_id="auggie",
             default_bin="auggie",
-            default_args=["--acp"],
+            default_args=["--acp", "--workspace-root=/tmp/auggie-empty", "--allow-indexing"],
             default_mode_id=None,
             aliases=["augment", "augment-code"],
             env_var_prefix="AUGGIE",
