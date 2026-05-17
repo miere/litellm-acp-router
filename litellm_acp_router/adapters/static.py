@@ -18,6 +18,8 @@ class StaticAdapter(Adapter):
         aliases: Optional[List[str]] = None,
         env_var_prefix: Optional[str] = None,
         acp_model_arg: Optional[str] = None,
+        acp_workspace_arg: Optional[str] = None,
+        default_workspace_dir: Optional[str] = None,
     ) -> None:
         self.agent_id = agent_id.strip().lower()
         self.default_bin = default_bin
@@ -27,6 +29,8 @@ class StaticAdapter(Adapter):
         self.aliases = [a.strip().lower() for a in (aliases or [])]
         self.env_var_prefix = (env_var_prefix or self.agent_id).upper().replace("-", "_")
         self.acp_model_arg = acp_model_arg
+        self.acp_workspace_arg = acp_workspace_arg
+        self.default_workspace_dir = default_workspace_dir
 
     def build_spec(self, optional_params: Dict[str, Any]) -> AgentSpec:
         bin_value = (
@@ -46,6 +50,15 @@ class StaticAdapter(Adapter):
         acp_model = optional_params.get("acp_model")
         if self.acp_model_arg and acp_model:
             args.extend([self.acp_model_arg, str(acp_model)])
+
+        if self.acp_workspace_arg:
+            workspace_dir = (
+                optional_params.get("acp_workspace_dir")
+                or os.getenv(f"{self.env_var_prefix}_WORKSPACE_DIR")
+                or self.default_workspace_dir
+            )
+            if workspace_dir:
+                args.extend([self.acp_workspace_arg, str(workspace_dir)])
 
         mode_id = (
             optional_params.get(f"{self.agent_id}_mode_id")

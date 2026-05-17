@@ -66,12 +66,25 @@ class SessionManager:
         cwd: str,
         options: Dict[str, Any],
     ) -> ManagedACPSession:
+        # Import inside the method to avoid a circular import at module load.
+        from .runtime import resolve_stdio_buffer_bytes
+
         permission_mode = str(options.get("permission_mode", "auto_allow"))
         protocol_version = int(options.get("protocol_version", 1))
         mcp_servers = options.get("mcp_servers") or []
+        emit_tool_activity = bool(options.get("acp_emit_tool_activity", True))
+        stdio_buffer_bytes = resolve_stdio_buffer_bytes(options)
 
-        client = AgentClient(permission_mode=permission_mode)
-        process_cm = self._spawner(client, spec.bin, *spec.args)
+        client = AgentClient(
+            permission_mode=permission_mode,
+            emit_tool_activity=emit_tool_activity,
+        )
+        process_cm = self._spawner(
+            client,
+            spec.bin,
+            *spec.args,
+            transport_kwargs={"limit": stdio_buffer_bytes},
+        )
         conn, _proc = await process_cm.__aenter__()
         try:
             await conn.initialize(protocol_version=protocol_version)

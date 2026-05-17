@@ -7,11 +7,16 @@ from .utils import pick_permission_option
 
 
 class AgentClient(Client):
-    def __init__(self, permission_mode: str = "auto_allow") -> None:
+    def __init__(
+        self,
+        permission_mode: str = "auto_allow",
+        emit_tool_activity: bool = True,
+    ) -> None:
         self.queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         self.final_text_parts: List[str] = []
         self.suppress_stream = False
         self.permission_mode = permission_mode.strip().lower()
+        self.emit_tool_activity = bool(emit_tool_activity)
 
     async def request_permission(
         self, options, session_id=None, tool_call=None, **kwargs: Any
@@ -42,6 +47,14 @@ class AgentClient(Client):
         ).strip()
 
         if update_kind == "agent_thought_chunk":
+            if self.suppress_stream:
+                return
+            text = self._content_block_to_text(data.get("content"))
+            if text:
+                # Reasoning is intentionally not appended to final_text_parts so
+                # it does not pollute the assistant transcript captured for the
+                # non-streaming acompletion path or for stateful history.
+                await self.queue.put({"kind": "reasoning", "text": text})
             return
 
         if update_kind == "agent_message_chunk":
@@ -51,6 +64,48 @@ class AgentClient(Client):
                     return
                 self.final_text_parts.append(text)
                 await self.queue.put({"kind": "assistant_text", "text": text})
+            return
+
+        if update_kind == "tool_call":
+            if self.suppress_stream or not self.emit_tool_activity:
+                return
+            text = self._format_tool_call_start(data)
+            if text:
+                await self.queue.put({"kind": "assistant_text", "text": text})
+            return
+
+        if update_kind == "tool_call_update":
+            if self.suppress_stream or not self.emit_tool_activity:
+                return
+            text = self._format_tool_call_update(data)
+            if text:
+                await self.queue.put({"kind": "assistant_text", "text": text})
+            return
+
+    def _format_tool_call_start(self, data: Dict[str, Any]) -> str:
+        title = self._read_string(data, "title")
+        if not title:
+            return ""
+        kind = self._read_string(data, "kind")
+        label = f"[{kind}] {title}" if kind else title
+        return f"\n\n> {label}\n\n"
+
+    def _format_tool_call_update(self, data: Dict[str, Any]) -> str:
+        status = self._read_string(data, "status").lower()
+        if status not in ("completed", "failed"):
+            return ""
+        title = self._read_string(data, "title")
+        if not title:
+            return ""
+        suffix = "done" if status == "completed" else "failed"
+        return f"\n\n> {title} \u2014 {suffix}\n\n"
+
+    @staticmethod
+    def _read_string(data: Dict[str, Any], key: str) -> str:
+        value = data.get(key)
+        if value is None:
+            return ""
+        return str(value).strip()
 
     def _content_block_to_text(self, value: Any) -> str:
         if value is None:

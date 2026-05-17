@@ -56,6 +56,7 @@ def _make_spawner():
 
     def spawn(client, command, *args, **kwargs):
         cm = _FakeProcessCM(client)
+        cm.spawn_kwargs = kwargs
         created.append(cm)
         return cm
 
@@ -235,6 +236,63 @@ class StatefulRuntimeTests(unittest.TestCase):
             self.assertEqual(len(created[0].conn.prompts), 1)
 
         asyncio.run(go())
+
+    def test_stateful_spawn_uses_default_stdio_buffer_limit(self) -> None:
+        from litellm_acp_router.runtime import DEFAULT_STDIO_BUFFER_BYTES
+
+        spawner, created = _make_spawner()
+        runtime = Runtime(session_manager=SessionManager(spawner=spawner))
+
+        asyncio.run(_drain(runtime, [{"role": "user", "content": "hello"}]))
+
+        self.assertEqual(
+            created[0].spawn_kwargs.get("transport_kwargs"),
+            {"limit": DEFAULT_STDIO_BUFFER_BYTES},
+        )
+
+    def test_stateful_spawn_honors_custom_stdio_buffer_limit(self) -> None:
+        spawner, created = _make_spawner()
+        runtime = Runtime(session_manager=SessionManager(spawner=spawner))
+
+        messages = [{"role": "user", "content": "hello"}]
+        kw = _kwargs(messages)
+        kw["optional_params"]["acp_stdio_buffer_bytes"] = 4 * 1024 * 1024
+
+        asyncio.run(_drain(runtime, messages, kwargs_override=kw))
+
+        self.assertEqual(
+            created[0].spawn_kwargs.get("transport_kwargs"),
+            {"limit": 4 * 1024 * 1024},
+        )
+
+
+class EventToChunkTests(unittest.TestCase):
+    def test_reasoning_event_maps_to_provider_specific_fields(self) -> None:
+        from litellm_acp_router.runtime import _event_to_chunk
+
+        chunk = _event_to_chunk({"kind": "reasoning", "text": "thinking"})
+        self.assertIsNotNone(chunk)
+        self.assertEqual(chunk["text"], "")
+        self.assertEqual(
+            chunk["provider_specific_fields"],
+            {"reasoning_content": "thinking"},
+        )
+        self.assertFalse(chunk["is_finished"])
+        self.assertIsNone(chunk["finish_reason"])
+
+    def test_assistant_text_event_maps_to_text_chunk(self) -> None:
+        from litellm_acp_router.runtime import _event_to_chunk
+
+        chunk = _event_to_chunk({"kind": "assistant_text", "text": "hello"})
+        self.assertIsNotNone(chunk)
+        self.assertEqual(chunk["text"], "hello")
+        self.assertNotIn("provider_specific_fields", chunk)
+
+    def test_empty_text_event_is_dropped(self) -> None:
+        from litellm_acp_router.runtime import _event_to_chunk
+
+        self.assertIsNone(_event_to_chunk({"kind": "assistant_text", "text": ""}))
+        self.assertIsNone(_event_to_chunk({"kind": "reasoning", "text": ""}))
 
 
 if __name__ == "__main__":

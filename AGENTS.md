@@ -20,7 +20,10 @@ local Agent Client Protocol (ACP) CLI agents.
   user prompt, and yield LiteLLM streaming chunks. It exposes both
   `run_stream` (stateless) and `run_stateful_stream` (opt-in stateful).
 - `client.AgentClient` receives ACP session updates and converts assistant
-  message chunks into streamable text events.
+  message chunks into streamable text events. It also surfaces reasoning
+  (`agent_thought_chunk`) as `{"kind": "reasoning", ...}` queue events and
+  narrates tool activity on `tool_call` start plus `tool_call_update` terminal
+  status (`completed` → "done", `failed` → "failed").
 - `utils.py` contains request normalization, prompt formatting, path inference,
   argument coercion, and permission-option selection helpers.
 - `binding.py` parses the configured `acp_session_binding_strategy` and
@@ -82,6 +85,8 @@ class ExampleAdapter(StaticAdapter):
             aliases=["example-ai"],
             env_var_prefix="EXAMPLE",
             acp_model_arg="--model",
+            acp_workspace_arg="--workspace-root",
+            default_workspace_dir=None,
         )
 ```
 
@@ -89,6 +94,12 @@ If the adapter supports model selection, use the generic optional parameter
 `acp_model` and set `acp_model_arg` to the CLI flag that accepts the model. If
 `acp_model` is absent, do not pass a model flag; let the underlying CLI use its
 own local default.
+
+If the adapter exposes a workspace/project-root flag, use the generic optional
+parameter `acp_workspace_dir` and set `acp_workspace_arg` to the CLI flag that
+accepts it. `default_workspace_dir` provides a fallback when neither
+`acp_workspace_dir` nor `<PREFIX>_WORKSPACE_DIR` is set; leave it `None` to
+skip the flag entirely in that case.
 
 Then export and register the adapter:
 
@@ -104,6 +115,30 @@ Users can then configure LiteLLM with `model: acp/example`.
   `litellm_acp_router.router.router_handler`.
 - Prefer `acp_model` for adapter model selection instead of adapter-specific
   keys.
+- Prefer `acp_workspace_dir` for adapter workspace selection instead of
+  adapter-specific keys. Adapters honor `<PREFIX>_WORKSPACE_DIR` as an
+  environment-variable fallback.
+- `acp_emit_tool_activity` (default `true`) toggles inline narration of ACP
+  `tool_call` and `tool_call_update` events as assistant text chunks. Disable
+  it when a deployment needs clean prose only. The flag is read in both
+  `Runtime.run_stream` and `SessionManager.create` and forwarded to
+  `AgentClient`. Narration covers `tool_call` start plus terminal
+  `tool_call_update` status (`completed`, `failed`); intermediate progress is
+  suppressed.
+- Reasoning is forwarded to LiteLLM as a streaming chunk with
+  `provider_specific_fields={"reasoning_content": <text>}` and an empty
+  `text`. LiteLLM's streaming handler propagates that onto the OpenAI delta's
+  `reasoning_content` field. Reasoning is intentionally excluded from
+  `AgentClient.get_final_text()` so it does not enter the assistant transcript
+  used by stateful resume or the non-streaming `acompletion` path.
+- `acp_stdio_buffer_bytes` (default `8 * 1024 * 1024`, i.e. 8 MiB) sets the
+  `asyncio.StreamReader` buffer used to read JSON-RPC frames from the agent's
+  stdout. Threaded through both spawn sites via
+  `transport_kwargs={"limit": N}` to `spawn_agent_process`. Resolved by
+  `runtime.resolve_stdio_buffer_bytes`, which falls back to the default for
+  missing, non-numeric, or non-positive values. Raise it when large
+  `tool_call` frames (file diffs, terminal output, MCP responses) trigger
+  upstream `LimitOverrunError` and surface as `ConnectionError`.
 - Adapter-specific binary, args, mode, and bootstrap overrides use existing
   keys such as `<agent>_bin`, `<agent>_args`, `<agent>_mode_id`, and
   `<agent>_bootstrap_commands`.
@@ -124,13 +159,15 @@ Test expectations:
 - `binding.py` unit tests cover strategy parsing, deterministic prompt
   hashing, case-insensitive header lookup, and fail-fast behavior when a
   configured header is missing or empty.
-- `SessionManager` unit tests cover create, get, close, TTL eviction, and
-  LRU max-session enforcement using fake process context managers, all keyed
-  by binding key.
+- `SessionManager` unit tests cover create, get, close, TTL eviction,
+  LRU max-session enforcement, and `acp_stdio_buffer_bytes` propagation
+  (default and custom) via `transport_kwargs`, using fake process context
+  managers keyed by binding key.
 - Stateful runtime tests mock `spawn_agent_process` and cover first-request
   session creation, second-request delta resume, header-driven resume,
   different first messages opening new sessions, missing-header fail-fast,
-  empty-delta errors, and lock-timeout errors.
+  empty-delta errors, lock-timeout errors, and `acp_stdio_buffer_bytes`
+  propagation (default and custom).
 
 If the relevant CLIs are installed and authenticated, smoke-test through
 LiteLLM using `litellm_config.example.yaml` or a local config derived from it.

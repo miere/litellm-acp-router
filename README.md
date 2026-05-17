@@ -120,6 +120,94 @@ IDs available to your account.
 `acp_model` is intentionally generic so future adapters can reuse the same
 configuration key when they support model selection.
 
+## Auggie workspace directory
+
+Auggie operates against a workspace directory passed via its `--workspace-root`
+CLI flag. By default the router points Auggie at `/tmp/auggie-empty`. Override
+it per model alias with the generic `acp_workspace_dir` parameter:
+
+```yaml
+model_list:
+  - model_name: acp-auggie-myproject
+    litellm_params:
+      model: acp/auggie
+      acp_workspace_dir: /absolute/path/to/project
+```
+
+The Auggie adapter turns this into
+`auggie --acp --allow-indexing --workspace-root /absolute/path/to/project`.
+The environment variable `AUGGIE_WORKSPACE_DIR` is honored as a fallback when
+the parameter is not set in the model config.
+
+`acp_workspace_dir` is intentionally generic so future adapters that expose a
+workspace flag can reuse the same configuration key.
+
+## Tool activity narration
+
+ACP agents such as Auggie and Kimi execute tools internally (closed-loop) and
+do not surface OpenAI-style `tool_calls` for the host to execute. To give the
+caller visibility into what the agent is doing, the router translates ACP
+`tool_call` and `tool_call_update` events into inline assistant text chunks.
+
+For each `tool_call` start event with a title the router emits a line shaped
+like `> [kind] title` (or just `> title` when the kind is absent). For
+`tool_call_update` events the router stays silent until a terminal status:
+`completed` produces `> title — done`, `failed` produces `> title — failed`.
+Intermediate progress (`in_progress`, etc.) is suppressed. The output is plain
+text and does not populate the OpenAI `tool_calls` field, so no client-side
+execution round-trip is triggered.
+
+Narration is on by default. Disable it per model alias when a deployment wants
+clean assistant text only:
+
+```yaml
+model_list:
+  - model_name: acp-auggie
+    litellm_params:
+      model: acp/auggie
+      acp_emit_tool_activity: false
+```
+
+## Reasoning streaming
+
+ACP agents emit reasoning as `agent_thought_chunk` frames separately from the
+final `agent_message_chunk` answer. The router forwards reasoning text to
+LiteLLM via the streaming chunk's `provider_specific_fields["reasoning_content"]`
+so it lands on the OpenAI delta's `reasoning_content` field. Reasoning-aware
+clients render it as a distinct channel; assistant prose continues to flow
+through `delta.content`.
+
+Reasoning is not appended to the assistant transcript captured for the
+non-streaming `acompletion` path or for stateful session history, so it does
+not pollute downstream context.
+
+If a client renders `reasoning_content` only on completion (not progressively),
+that is a client-side concern; the router yields each reasoning chunk as it
+arrives from the agent.
+
+## ACP stdio buffer (`acp_stdio_buffer_bytes`)
+
+The router reads JSON-RPC frames from the agent's stdout via
+`asyncio.StreamReader`, whose default buffer is 64 KiB. Single frames carrying
+file diffs, terminal output, or large MCP responses can overrun that ceiling
+and crash the receive loop with `LimitOverrunError`, surfaced to the caller as
+`ConnectionError: Connection closed`.
+
+To avoid that, the router passes `transport_kwargs={"limit": N}` to
+`spawn_agent_process` for both stateless and stateful spawns. The default is
+**8 MiB**. Tune per model alias when an agent legitimately emits larger
+frames:
+
+```yaml
+model_list:
+  - model_name: acp-auggie
+    litellm_params:
+      model: acp/auggie
+      acp_stdio_buffer_bytes: 16777216  # 16 MiB
+```
+
+Non-positive or non-numeric values fall back to the 8 MiB default.
+
 ## Stateful ACP sessions (opt-in)
 
 By default the router runs each Chat Completions request through a fresh ACP

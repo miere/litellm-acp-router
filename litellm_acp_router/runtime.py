@@ -21,6 +21,57 @@ from .utils import (
 
 LOG = logging.getLogger(__name__)
 
+# Default StreamReader buffer for the ACP stdio transport. The upstream acp
+# package falls back to asyncio's 64 KiB default, which is easily overrun by a
+# single tool_call frame carrying file diffs or terminal output and crashes the
+# receive loop with LimitOverrunError. 8 MiB gives ample headroom while keeping
+# the per-process memory ceiling bounded.
+DEFAULT_STDIO_BUFFER_BYTES = 8 * 1024 * 1024
+
+
+def resolve_stdio_buffer_bytes(options: Dict[str, Any]) -> int:
+    raw = options.get("acp_stdio_buffer_bytes")
+    if raw is None:
+        return DEFAULT_STDIO_BUFFER_BYTES
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_STDIO_BUFFER_BYTES
+    if value <= 0:
+        return DEFAULT_STDIO_BUFFER_BYTES
+    return value
+
+
+def _event_to_chunk(event: Dict[str, Any]) -> Optional[GenericStreamingChunk]:
+    """Translate an AgentClient queue event into a LiteLLM streaming chunk.
+
+    Reasoning events surface via `provider_specific_fields["reasoning_content"]`
+    so LiteLLM propagates them onto the OpenAI delta's `reasoning_content`
+    field, leaving assistant prose in `text`.
+    """
+    text = event.get("text") or ""
+    if not text:
+        return None
+    kind = event.get("kind")
+    if kind == "reasoning":
+        return {
+            "finish_reason": None,
+            "index": 0,
+            "is_finished": False,
+            "text": "",
+            "tool_use": None,
+            "usage": None,
+            "provider_specific_fields": {"reasoning_content": text},
+        }
+    return {
+        "finish_reason": None,
+        "index": 0,
+        "is_finished": False,
+        "text": text,
+        "tool_use": None,
+        "usage": None,
+    }
+
 
 class Runtime:
     def __init__(self, session_manager: Optional[SessionManager] = None) -> None:
@@ -94,10 +145,20 @@ class Runtime:
         cwd = self.resolve_cwd(kwargs, messages)
         mcp_servers = optional_params.get("mcp_servers") or []
         permission_mode = str(optional_params.get("permission_mode", "auto_allow"))
+        emit_tool_activity = bool(optional_params.get("acp_emit_tool_activity", True))
+        stdio_buffer_bytes = resolve_stdio_buffer_bytes(optional_params)
 
-        client = AgentClient(permission_mode=permission_mode)
+        client = AgentClient(
+            permission_mode=permission_mode,
+            emit_tool_activity=emit_tool_activity,
+        )
 
-        async with spawn_agent_process(client, spec.bin, *spec.args) as (conn, _proc):
+        async with spawn_agent_process(
+            client,
+            spec.bin,
+            *spec.args,
+            transport_kwargs={"limit": stdio_buffer_bytes},
+        ) as (conn, _proc):
             await conn.initialize(protocol_version=protocol_version)
             session = await conn.new_session(
                 cwd=str(cwd),
@@ -136,18 +197,9 @@ class Runtime:
                     except asyncio.TimeoutError:
                         continue
 
-                    text = event.get("text") or ""
-                    if not text:
-                        continue
-
-                    yield {
-                        "finish_reason": None,
-                        "index": 0,
-                        "is_finished": False,
-                        "text": text,
-                        "tool_use": None,
-                        "usage": None,
-                    }
+                    chunk = _event_to_chunk(event)
+                    if chunk is not None:
+                        yield chunk
 
                 await prompt_task
 
@@ -278,17 +330,9 @@ class Runtime:
                     event = await asyncio.wait_for(client.queue.get(), timeout=0.1)
                 except asyncio.TimeoutError:
                     continue
-                text = event.get("text") or ""
-                if not text:
-                    continue
-                yield {
-                    "finish_reason": None,
-                    "index": 0,
-                    "is_finished": False,
-                    "text": text,
-                    "tool_use": None,
-                    "usage": None,
-                }
+                chunk = _event_to_chunk(event)
+                if chunk is not None:
+                    yield chunk
             await prompt_task
         except Exception as exc:
             LOG.info(

@@ -49,7 +49,7 @@ def _make_spawner():
 
     def spawn(client, command, *args, **kwargs):
         cm = _FakeProcessCM()
-        created.append((client, command, list(args), cm))
+        created.append((client, command, list(args), cm, kwargs))
         return cm
 
     return spawn, created
@@ -160,6 +160,41 @@ class SessionManagerTests(unittest.TestCase):
             self.assertEqual(created[0][3].exit_count, 1)
             self.assertEqual(created[1][3].exit_count, 0)
             self.assertEqual(created[2][3].exit_count, 0)
+
+        _run(go())
+
+    def test_create_passes_default_stdio_buffer_limit(self) -> None:
+        from litellm_acp_router.runtime import DEFAULT_STDIO_BUFFER_BYTES
+
+        spawner, created = _make_spawner()
+        mgr = SessionManager(spawner=spawner)
+
+        async def go():
+            await _create(mgr, key="key-buf")
+            self.assertEqual(
+                created[0][4].get("transport_kwargs"),
+                {"limit": DEFAULT_STDIO_BUFFER_BYTES},
+            )
+
+        _run(go())
+
+    def test_create_honors_custom_stdio_buffer_limit(self) -> None:
+        spawner, created = _make_spawner()
+        mgr = SessionManager(spawner=spawner)
+
+        async def go():
+            await mgr.create(
+                binding_key="key-buf-custom",
+                spec=_spec(),
+                model="acp/example",
+                acp_model=None,
+                cwd="/tmp/example",
+                options={"acp_stdio_buffer_bytes": 16 * 1024 * 1024},
+            )
+            self.assertEqual(
+                created[0][4].get("transport_kwargs"),
+                {"limit": 16 * 1024 * 1024},
+            )
 
         _run(go())
 

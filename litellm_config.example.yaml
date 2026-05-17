@@ -8,6 +8,18 @@ model_list:
       model: acp/auggie
       # Optional. When omitted, Auggie uses its local default model.
       # acp_model: gpt-5.5
+      # Optional. Maps to Auggie's --workspace-root flag.
+      # When omitted, defaults to /tmp/auggie-empty.
+      # acp_workspace_dir: /absolute/path/to/project
+      # Optional. Inline narration of ACP tool_call events as assistant text
+      # (e.g. "> [execute] npm install"). Defaults to true. Set false to
+      # suppress narration and surface only the agent's prose.
+      # acp_emit_tool_activity: false
+      # Optional. StreamReader buffer (in bytes) for the ACP stdio transport.
+      # Defaults to 8 MiB. Increase if you see "Connection closed" failures
+      # caused by upstream LimitOverrunError on large tool_call frames
+      # (file diffs, terminal output, MCP responses).
+      # acp_stdio_buffer_bytes: 16777216
 
   - model_name: acp-auggie-stateful
     litellm_params:
