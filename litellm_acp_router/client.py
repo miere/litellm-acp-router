@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 
 from acp.interfaces import Client
 
-from utils import pick_permission_option
+from .utils import pick_permission_option
 
 
 class AgentClient(Client):

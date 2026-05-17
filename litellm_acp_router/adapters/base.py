@@ -1,6 +1,6 @@
 from typing import Any, Dict, List
 
-from schemas import AgentSpec
+from litellm_acp_router.schemas import AgentSpec
 
 
 class Adapter:

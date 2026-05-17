@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "acp-router"
+name = "litellm-acp-router"
 version = "0.1.0"
-description = "Route OpenAI-style requests to ACP agents through LiteLLM."
+description = "LiteLLM custom provider for Agent Client Protocol agents."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
@@ -13,18 +13,8 @@ dependencies = [
   "agent-client-protocol>=0.7.0",
 ]
 
-[project.scripts]
-acp-router = "serve:main"
-
 [tool.setuptools]
-packages = ["adapters"]
-py-modules = [
-  "router",
-  "router_handler",
-  "runtime",
-  "client",
-  "registry",
-  "utils",
-  "schemas",
-  "serve",
+packages = [
+  "litellm_acp_router",
+  "litellm_acp_router.adapters",
 ]

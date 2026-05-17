@@ -6,9 +6,9 @@ from typing import Any, AsyncIterator, Dict, List
 from acp import spawn_agent_process, text_block
 from litellm.types.utils import GenericStreamingChunk
 
-from client import AgentClient
-from schemas import AgentSpec
-from utils import (
+from .client import AgentClient
+from .schemas import AgentSpec
+from .utils import (
     common_existing_parent,
     content_blocks_to_text,
     extract_existing_paths_from_text,

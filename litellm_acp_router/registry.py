@@ -1,6 +1,6 @@
 from typing import Any, Dict, Optional
 
-from adapters.base import Adapter
+from .adapters.base import Adapter
 
 
 class Registry:
