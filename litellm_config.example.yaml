@@ -1,0 +1,15 @@
+model_list:
+  - model_name: acp-kimi
+    litellm_params:
+      model: acp/kimi
+
+  - model_name: acp-auggie
+    litellm_params:
+      model: acp/auggie
+      # Optional. When omitted, Auggie uses its local default model.
+      # acp_model: gpt-5.5
+
+litellm_settings:
+  custom_provider_map:
+    - provider: acp
+      custom_handler: litellm_acp_router.router.router_handler

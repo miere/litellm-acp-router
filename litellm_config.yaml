@@ -1,9 +1,0 @@
-model_list:
-  - model_name: acp-kimi
-    litellm_params:
-      model: acp/kimi
-
-litellm_settings:
-  custom_provider_map:
-    - provider: acp
-      custom_handler: router.router_handler
