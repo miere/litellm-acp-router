@@ -1,56 +1,88 @@
-# LiteLLM ACP Router
+<div align="center">
 
-`litellm-acp-router` is a LiteLLM custom provider for Agent Client Protocol
-(ACP) agents. It lets OpenAI-compatible clients call local ACP-capable CLI
-agents through the normal LiteLLM proxy.
+# 🛰️ LiteLLM ACP Router
 
-The package currently includes adapters for:
+**Bring your local Agent Client Protocol (ACP) CLI agents to any OpenAI-compatible client.**
 
-- Kimi via ACP (`kimi acp`)
-- Auggie via ACP (`auggie --acp`)
+A LiteLLM custom provider that turns ACP-capable agents like **Kimi** and **Auggie**
+into first-class chat completion models — streaming, reasoning, tool narration,
+and stateful sessions included.
 
-## Acknowlegment
-This project is a fork from the straightforward and clean implementation made
-by [nulrouter](https://github.com/nulrouter/acp-router). His work save us hours
-worth of work.
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
+[![LiteLLM](https://img.shields.io/badge/LiteLLM-custom%20provider-7c3aed.svg)](https://docs.litellm.ai/)
+[![ACP](https://img.shields.io/badge/protocol-Agent%20Client%20Protocol-1f8a70.svg)](https://github.com/zed-industries/agent-client-protocol)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-## Installation
+</div>
 
-Install the extension into the same Python environment where LiteLLM runs:
+---
+
+## ✨ Why this exists
+
+ACP agents are powerful local CLIs, but they don't speak the OpenAI Chat
+Completions dialect that the rest of the ecosystem expects. **LiteLLM ACP
+Router** bridges that gap: point any OpenAI client at your LiteLLM proxy, and
+get a real ACP agent on the other end — with streaming text, reasoning
+channels, tool activity, and optional long-lived sessions.
+
+### Supported agents
+
+| Adapter  | Launch command  | Model selection | Workspace flag       |
+|----------|-----------------|-----------------|----------------------|
+| `kimi`   | `kimi acp`      | —               | —                    |
+| `auggie` | `auggie --acp`  | `--model`       | `--workspace-root`   |
+
+> Adding a new ACP agent is a few-line subclass of `StaticAdapter`. See
+> [`AGENTS.md`](AGENTS.md) for the recipe.
+
+---
+
+## 🙏 Acknowledgments
+
+This project is a fork of the clean, no-nonsense implementation by
+[**nulrouter/acp-router**](https://github.com/nulrouter/acp-router). Their
+groundwork saved us many hours — thank you. 💚
+
+---
+
+## 🚀 Quickstart
+
+### 1. Install
+
+Install into the same Python environment where LiteLLM runs:
 
 ```bash
-# Just in case... ;)
+# Optional but recommended
 python -m pip install --upgrade pip setuptools wheel
-# assumes `python` points to your current/default python installation
+
+# LiteLLM with proxy extras
 python -m pip install "litellm[proxy]"
-# It must be absolute path, otherwise you might run into classpath issues.
+
+# This package — use an ABSOLUTE path to avoid classpath surprises
 python -m pip install -e /absolute/path/to/litellm-acp-router
 ```
 
-This installs LiteLLM proxy dependencies and the Agent Client Protocol SDK.
-You must still install and authenticate the underlying CLI agents you plan to
-use, such as `kimi` or `auggie`.
+> 📌 You still need to install and authenticate the underlying CLI agents
+> (`kimi`, `auggie`, …) on your machine.
 
-## LiteLLM configuration
+### 2. Wire it into LiteLLM
 
-Create the file `local.py` on the directory you want store your configuration file.
+Create a `local.py` next to your LiteLLM config:
+
 ```python
 from litellm_acp_router.router import router_handler
+
 __all__ = ["router_handler"]
 ```
 
-Add the ACP provider to your LiteLLM config with `custom_provider_map`:
+Register the `acp` provider and expose one or more model aliases:
 
 ```yaml
 litellm_settings:
   custom_provider_map:
     - provider: acp
       custom_handler: local.router_handler
-```
 
-Then expose one or more model aliases through `model_list`:
-
-```yaml
 model_list:
   - model_name: acp-kimi
     litellm_params:
@@ -61,20 +93,19 @@ model_list:
       model: acp/auggie
 ```
 
-See `litellm_config.example.yaml` for a complete minimal example.
+> 💡 A complete minimal config lives in
+> [`litellm_config.example.yaml`](litellm_config.example.yaml).
 
-## Running LiteLLM
-
-Run LiteLLM normally with your config file:
+### 3. Run the proxy
 
 ```bash
 litellm --config /path/to/litellm.yaml
 ```
 
-This project no longer provides a server launcher. LiteLLM owns the proxy
-process; this package only provides the custom ACP provider implementation.
+This package does **not** ship a server launcher. LiteLLM owns the proxy
+process; we just plug in as a custom provider.
 
-## Example request
+### 4. Send a request
 
 ```bash
 curl -X POST http://127.0.0.1:4000/chat/completions \
@@ -82,18 +113,24 @@ curl -X POST http://127.0.0.1:4000/chat/completions \
   -d '{
     "model": "acp-auggie",
     "messages": [
-      {
-        "role": "user",
-        "content": "Explain this repository"
-      }
+      { "role": "user", "content": "Explain this repository" }
     ]
   }'
 ```
 
-## Auggie model selection
+That's it. You're now talking to a local ACP agent through the OpenAI API. 🎉
 
-Auggie can choose its own locally configured default model. To preserve that
-behavior, omit `acp_model`:
+---
+
+## 🎛️ Configuring Auggie
+
+The Auggie adapter exposes two generic, forward-compatible knobs: `acp_model`
+and `acp_workspace_dir`. Other adapters can adopt the same keys as they grow.
+
+### Model selection — `acp_model`
+
+By default Auggie picks its **own locally configured default model**, so most
+users can simply omit `acp_model`:
 
 ```yaml
 model_list:
@@ -102,29 +139,23 @@ model_list:
       model: acp/auggie
 ```
 
-To pin an Auggie model from LiteLLM config, set the generic `acp_model`
-parameter:
+Pin a specific model per alias when you need it:
 
 ```yaml
 model_list:
   - model_name: acp-auggie-gpt55
     litellm_params:
       model: acp/auggie
-      acp_model: gpt-5.5
+      acp_model: gpt-5.5    # → auggie --acp --model gpt-5.5
 ```
 
-The Auggie adapter turns this into `auggie --acp --model gpt-5.5`. Use
-`auggie models list` or `auggie models list --json` to confirm the exact model
-IDs available to your account.
+> 🔎 Run `auggie models list` (or `--json`) to discover the exact model IDs
+> available to your account.
 
-`acp_model` is intentionally generic so future adapters can reuse the same
-configuration key when they support model selection.
+### Workspace directory — `acp_workspace_dir`
 
-## Auggie workspace directory
-
-Auggie operates against a workspace directory passed via its `--workspace-root`
-CLI flag. By default the router points Auggie at `/tmp/auggie-empty`. Override
-it per model alias with the generic `acp_workspace_dir` parameter:
+Auggie indexes a workspace passed via `--workspace-root`. The router defaults
+to `/tmp/auggie-empty`; override it per alias:
 
 ```yaml
 model_list:
@@ -132,33 +163,41 @@ model_list:
     litellm_params:
       model: acp/auggie
       acp_workspace_dir: /absolute/path/to/project
+      # → auggie --acp --allow-indexing --workspace-root /absolute/path/to/project
 ```
 
-The Auggie adapter turns this into
-`auggie --acp --allow-indexing --workspace-root /absolute/path/to/project`.
-The environment variable `AUGGIE_WORKSPACE_DIR` is honored as a fallback when
-the parameter is not set in the model config.
+| Resolution order      | Source                                              |
+|-----------------------|-----------------------------------------------------|
+| 1. Per-alias param    | `acp_workspace_dir` in `litellm_params`             |
+| 2. Environment        | `AUGGIE_WORKSPACE_DIR`                              |
+| 3. Adapter default    | `/tmp/auggie-empty`                                 |
 
-`acp_workspace_dir` is intentionally generic so future adapters that expose a
-workspace flag can reuse the same configuration key.
+> Both `acp_model` and `acp_workspace_dir` are deliberately generic so future
+> adapters can adopt them without inventing new keys.
 
-## Tool activity narration
+---
 
-ACP agents such as Auggie and Kimi execute tools internally (closed-loop) and
-do not surface OpenAI-style `tool_calls` for the host to execute. To give the
-caller visibility into what the agent is doing, the router translates ACP
-`tool_call` and `tool_call_update` events into inline assistant text chunks.
+## 📡 Streaming behavior
 
-For each `tool_call` start event with a title the router emits a line shaped
-like `> [kind] title` (or just `> title` when the kind is absent). For
-`tool_call_update` events the router stays silent until a terminal status:
-`completed` produces `> title — done`, `failed` produces `> title — failed`.
-Intermediate progress (`in_progress`, etc.) is suppressed. The output is plain
-text and does not populate the OpenAI `tool_calls` field, so no client-side
-execution round-trip is triggered.
+### Tool activity narration
 
-Narration is on by default. Disable it per model alias when a deployment wants
-clean assistant text only:
+ACP agents like Auggie and Kimi execute tools **internally** (closed-loop) and
+never surface OpenAI-style `tool_calls` for the host to run. To keep callers in
+the loop, the router translates ACP `tool_call` and `tool_call_update` events
+into inline assistant text chunks:
+
+| Event                          | Emitted text             |
+|--------------------------------|--------------------------|
+| `tool_call` (start, with kind) | `> [kind] title`         |
+| `tool_call` (start, no kind)   | `> title`                |
+| `tool_call_update` → `completed` | `> title — done`       |
+| `tool_call_update` → `failed`  | `> title — failed`       |
+| `tool_call_update` → other     | *(silent)*               |
+
+The narration is plain text on `delta.content` — the OpenAI `tool_calls` field
+is **not** populated, so no client-side execution round-trip is triggered.
+
+Narration is **on by default**. Disable per alias when you want clean prose:
 
 ```yaml
 model_list:
@@ -168,35 +207,40 @@ model_list:
       acp_emit_tool_activity: false
 ```
 
-## Reasoning streaming
+### Reasoning channel
 
-ACP agents emit reasoning as `agent_thought_chunk` frames separately from the
-final `agent_message_chunk` answer. The router forwards reasoning text to
-LiteLLM via the streaming chunk's `provider_specific_fields["reasoning_content"]`
-so it lands on the OpenAI delta's `reasoning_content` field. Reasoning-aware
-clients render it as a distinct channel; assistant prose continues to flow
-through `delta.content`.
+ACP agents emit reasoning as `agent_thought_chunk` frames, separate from the
+final `agent_message_chunk` answer. The router forwards reasoning to LiteLLM
+via `provider_specific_fields["reasoning_content"]`, which lands on the
+OpenAI delta's `reasoning_content` field. Reasoning-aware clients render it as
+a distinct channel; assistant prose keeps flowing through `delta.content`.
 
-Reasoning is not appended to the assistant transcript captured for the
-non-streaming `acompletion` path or for stateful session history, so it does
-not pollute downstream context.
+> 🧠 Reasoning is intentionally **excluded** from the assistant transcript used
+> by the non-streaming `acompletion` path and by stateful session resume — it
+> won't pollute downstream context.
 
-If a client renders `reasoning_content` only on completion (not progressively),
-that is a client-side concern; the router yields each reasoning chunk as it
-arrives from the agent.
+If a client only renders `reasoning_content` on completion instead of
+progressively, that's a client-side concern; the router yields each chunk as
+soon as the agent emits it.
 
-## ACP stdio buffer (`acp_stdio_buffer_bytes`)
+---
+
+## 🧰 Advanced tuning
+
+<details>
+<summary><b><code>acp_stdio_buffer_bytes</code> — handling large JSON-RPC frames</b></summary>
+
+<br>
 
 The router reads JSON-RPC frames from the agent's stdout via
-`asyncio.StreamReader`, whose default buffer is 64 KiB. Single frames carrying
-file diffs, terminal output, or large MCP responses can overrun that ceiling
-and crash the receive loop with `LimitOverrunError`, surfaced to the caller as
-`ConnectionError: Connection closed`.
+`asyncio.StreamReader`, whose default buffer is **64 KiB**. Single frames
+carrying file diffs, terminal output, or large MCP responses can overrun that
+ceiling and crash the receive loop with `LimitOverrunError`, surfaced to the
+caller as `ConnectionError: Connection closed`.
 
-To avoid that, the router passes `transport_kwargs={"limit": N}` to
+To prevent that, the router passes `transport_kwargs={"limit": N}` to
 `spawn_agent_process` for both stateless and stateful spawns. The default is
-**8 MiB**. Tune per model alias when an agent legitimately emits larger
-frames:
+**8 MiB**. Raise it per alias when an agent legitimately emits larger frames:
 
 ```yaml
 model_list:
@@ -208,23 +252,29 @@ model_list:
 
 Non-positive or non-numeric values fall back to the 8 MiB default.
 
-## Stateful ACP sessions (opt-in)
+</details>
 
-By default the router runs each Chat Completions request through a fresh ACP
-agent process. The router can also keep an ACP agent process alive across
-requests so agents such as Auggie can reuse cached system/context state. This
-mode is opt-in and best suited to single-process LiteLLM deployments.
+---
 
-Stateful mode is enabled per model alias by setting
-`acp_session_binding_strategy`. The strategy decides how subsequent requests
-are matched to the same long-lived ACP process.
+## 🔁 Stateful ACP sessions *(opt-in)*
 
-### `prompt_hashing`
+By default, every Chat Completions request spawns a **fresh** ACP agent
+process. For agents like Auggie — which can reuse cached system/context state
+across turns — the router can also keep a process **alive across requests**.
+
+> ⚠️ Stateful mode is best suited to **single-process LiteLLM deployments**.
+> Sessions live in memory and don't survive restarts; multi-worker setups may
+> land on a fresh session when a request reaches a worker that doesn't own it.
+
+Enable it per alias by setting `acp_session_binding_strategy`. The strategy
+decides how subsequent requests are matched to the same long-lived process.
+
+### Strategy 1 — `prompt_hashing`
 
 Derive a stable session key from `SHA256(system_prompt + first_user_message)`,
-truncated to 16 hex characters. The first user turn of a conversation acts as
-its identity, so clients that always replay the full chat history (the
-OpenAI-style default) will keep landing on the same agent process.
+truncated to 16 hex characters. The first user turn becomes the conversation's
+identity, so clients that replay the full chat history (the OpenAI default)
+keep landing on the same agent process.
 
 ```yaml
 model_list:
@@ -237,10 +287,10 @@ model_list:
       acp_session_lock_timeout_seconds: 30
 ```
 
-### `http_header/<NAME>`
+### Strategy 2 — `http_header/<NAME>`
 
 Read the session key from an inbound HTTP header on the LiteLLM proxy request.
-Use this when your client can send a stable conversation identifier, such as
+Use this when your client can send a stable conversation identifier such as
 `X-Hermes-Conversation-Id`.
 
 ```yaml
@@ -251,33 +301,52 @@ model_list:
       acp_session_binding_strategy: http_header/X-Hermes-Conversation-Id
 ```
 
-If the configured header is missing or empty, the router fails fast with a
-`ValueError` that names the header and suggests resending the request with a
-non-empty value.
+If the configured header is missing or empty, the router **fails fast** with a
+`ValueError` naming the header and suggesting a retry with a non-empty value.
 
 ### How it works
 
-- On every stateful request the router resolves a binding key from the
-  configured strategy and looks up an existing ACP session for that key,
-  namespaced by adapter, model, optional `acp_model`, and resolved cwd.
-- If no session is found, the router spawns a fresh ACP process, runs any
-  bootstrap commands, and sends the full prompt built from `messages`.
-- If a session is found, the router only sends the messages that appear after
-  the last index it already streamed to that process. Reissuing the same
-  payload twice raises a clear error rather than re-sending stale turns.
+1. The router resolves a binding key from the configured strategy and looks up
+   an existing ACP session, namespaced by adapter, model, optional `acp_model`,
+   and resolved cwd.
+2. **Cache miss** → spawn a fresh ACP process, run any bootstrap commands, and
+   send the full prompt built from `messages`.
+3. **Cache hit** → send only the messages **after** the last index already
+   streamed to that process. Reissuing the same payload twice raises a clear
+   error rather than re-sending stale turns.
 
 ### Limits and safety
 
-- Sessions are held in-memory only. They do not survive a LiteLLM restart, and
-  multi-worker deployments will land on a new session when a request reaches a
-  worker that does not own the session.
-- Idle sessions are closed after `acp_session_ttl_seconds` (default `1800`).
-- Total live sessions are capped at `acp_max_sessions` (default `100`) using
-  least-recently-used eviction.
-- A single request per session is in flight at a time;
-  `acp_session_lock_timeout_seconds` (default `30`) bounds how long concurrent
-  requests wait before raising `TimeoutError`.
+| Setting                              | Default | Purpose                                                                 |
+|--------------------------------------|---------|-------------------------------------------------------------------------|
+| `acp_session_ttl_seconds`            | `1800`  | Close idle sessions after this many seconds                             |
+| `acp_max_sessions`                   | `100`   | Cap on live sessions; LRU eviction beyond the cap                       |
+| `acp_session_lock_timeout_seconds`   | `30`    | Max wait for the per-session lock before raising `TimeoutError`         |
 
-## License
+Only one request per session is in flight at a time — concurrent requests on
+the same key queue up to the lock timeout.
 
-MIT
+---
+
+## 🤝 Contributing
+
+Contributions are welcome — new ACP adapters especially. The internals are
+documented in [`AGENTS.md`](AGENTS.md), including:
+
+- the request flow (stateless and stateful),
+- how to add an adapter in a few lines via `StaticAdapter`,
+- configuration conventions, and
+- the test commands we expect to pass before merging.
+
+Quick validation loop:
+
+```bash
+python3 -m compileall litellm_acp_router tests
+python3 -m unittest discover -s tests
+```
+
+---
+
+## 📄 License
+
+Released under the [MIT License](LICENSE).
