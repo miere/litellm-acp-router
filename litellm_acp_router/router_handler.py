@@ -28,6 +28,18 @@ class RouterHandler(CustomLLM):
 
         adapter = self.registry.resolve(model=model, optional_params=optional_params)
         spec = adapter.build_spec(optional_params=optional_params)
+
+        if optional_params.get("acp_session_binding_strategy"):
+            async for chunk in self.runtime.run_stateful_stream(
+                spec=spec,
+                model=str(model),
+                kwargs=kwargs,
+                messages=messages,
+                tools=tools,
+            ):
+                yield chunk
+            return
+
         prompt_text = messages_to_prompt(messages, tools=tools) or "User: Hello"
 
         async for chunk in self.runtime.run_stream(

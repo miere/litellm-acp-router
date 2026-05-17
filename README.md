@@ -120,6 +120,76 @@ IDs available to your account.
 `acp_model` is intentionally generic so future adapters can reuse the same
 configuration key when they support model selection.
 
+## Stateful ACP sessions (opt-in)
+
+By default the router runs each Chat Completions request through a fresh ACP
+agent process. The router can also keep an ACP agent process alive across
+requests so agents such as Auggie can reuse cached system/context state. This
+mode is opt-in and best suited to single-process LiteLLM deployments.
+
+Stateful mode is enabled per model alias by setting
+`acp_session_binding_strategy`. The strategy decides how subsequent requests
+are matched to the same long-lived ACP process.
+
+### `prompt_hashing`
+
+Derive a stable session key from `SHA256(system_prompt + first_user_message)`,
+truncated to 16 hex characters. The first user turn of a conversation acts as
+its identity, so clients that always replay the full chat history (the
+OpenAI-style default) will keep landing on the same agent process.
+
+```yaml
+model_list:
+  - model_name: acp-auggie-stateful
+    litellm_params:
+      model: acp/auggie
+      acp_session_binding_strategy: prompt_hashing
+      acp_session_ttl_seconds: 1800
+      acp_max_sessions: 100
+      acp_session_lock_timeout_seconds: 30
+```
+
+### `http_header/<NAME>`
+
+Read the session key from an inbound HTTP header on the LiteLLM proxy request.
+Use this when your client can send a stable conversation identifier, such as
+`X-Hermes-Conversation-Id`.
+
+```yaml
+model_list:
+  - model_name: acp-auggie-stateful-header
+    litellm_params:
+      model: acp/auggie
+      acp_session_binding_strategy: http_header/X-Hermes-Conversation-Id
+```
+
+If the configured header is missing or empty, the router fails fast with a
+`ValueError` that names the header and suggests resending the request with a
+non-empty value.
+
+### How it works
+
+- On every stateful request the router resolves a binding key from the
+  configured strategy and looks up an existing ACP session for that key,
+  namespaced by adapter, model, optional `acp_model`, and resolved cwd.
+- If no session is found, the router spawns a fresh ACP process, runs any
+  bootstrap commands, and sends the full prompt built from `messages`.
+- If a session is found, the router only sends the messages that appear after
+  the last index it already streamed to that process. Reissuing the same
+  payload twice raises a clear error rather than re-sending stale turns.
+
+### Limits and safety
+
+- Sessions are held in-memory only. They do not survive a LiteLLM restart, and
+  multi-worker deployments will land on a new session when a request reaches a
+  worker that does not own the session.
+- Idle sessions are closed after `acp_session_ttl_seconds` (default `1800`).
+- Total live sessions are capped at `acp_max_sessions` (default `100`) using
+  least-recently-used eviction.
+- A single request per session is in flight at a time;
+  `acp_session_lock_timeout_seconds` (default `30`) bounds how long concurrent
+  requests wait before raising `TimeoutError`.
+
 ## License
 
 MIT

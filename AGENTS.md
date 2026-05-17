@@ -17,11 +17,21 @@ local Agent Client Protocol (ACP) CLI agents.
   model flag support.
 - `runtime.Runtime` owns ACP process lifecycle: spawn the agent, initialize the
   protocol session, set mode when configured, run bootstrap prompts, send the
-  user prompt, and yield LiteLLM streaming chunks.
+  user prompt, and yield LiteLLM streaming chunks. It exposes both
+  `run_stream` (stateless) and `run_stateful_stream` (opt-in stateful).
 - `client.AgentClient` receives ACP session updates and converts assistant
   message chunks into streamable text events.
 - `utils.py` contains request normalization, prompt formatting, path inference,
   argument coercion, and permission-option selection helpers.
+- `binding.py` parses the configured `acp_session_binding_strategy` and
+  resolves a session key for stateful mode. Two strategies are supported:
+  `prompt_hashing` (SHA256 of `system + first user message`, truncated to 16
+  hex characters) and `http_header/<NAME>` (case-insensitive lookup on the
+  inbound proxy request, fail-fast when missing or empty).
+- `session_manager.py` defines `ManagedACPSession` and `SessionManager`, which
+  own the lifecycle of long-lived ACP processes indexed by binding key,
+  including a `last_sent_message_index` for delta prompting, TTL eviction, and
+  LRU max-session enforcement.
 
 ## Request flow
 
@@ -35,6 +45,23 @@ local Agent Client Protocol (ACP) CLI agents.
 5. The adapter returns an `AgentSpec`, such as `auggie --acp` or `kimi acp`.
 6. `Runtime` starts the ACP process, sends the prompt, and yields streamed text
    back through LiteLLM.
+
+For stateful mode (`acp_session_binding_strategy` set), step 6 is replaced by
+`Runtime.run_stateful_stream`:
+
+1. Resolve cwd, evict expired sessions, enforce max-session cap.
+2. Resolve a binding key via `binding.resolve_session_key` using the configured
+   strategy. `http_header/<NAME>` reads from `kwargs["proxy_server_request"]`
+   and fails fast if the header is missing or empty.
+3. Look up an existing `ManagedACPSession` by binding key (namespaced by
+   adapter, model, optional `acp_model`, and cwd); create a new ACP process
+   via `SessionManager` if no match exists.
+4. Acquire the per-session asyncio lock with a timeout.
+5. Build the prompt from `messages[last_sent_message_index + 1:]` when
+   resuming, or from the full history when creating a new session. Raise
+   `ValueError` if a resume request has no new messages to send.
+6. Stream assistant chunks, then emit the stop chunk and advance
+   `last_sent_message_index` to the last message index of the request.
 
 ## Adding an adapter
 
@@ -86,9 +113,24 @@ Users can then configure LiteLLM with `model: acp/example`.
 After code changes, run at least:
 
 ```bash
-python3 -m compileall litellm_acp_router
+python3 -m compileall litellm_acp_router tests
+python3 -m unittest discover -s tests
 python3 -c "from litellm_acp_router.router import router_handler; print(type(router_handler).__name__)"
 ```
+
+Test expectations:
+
+- Stateless adapter tests continue to pass.
+- `binding.py` unit tests cover strategy parsing, deterministic prompt
+  hashing, case-insensitive header lookup, and fail-fast behavior when a
+  configured header is missing or empty.
+- `SessionManager` unit tests cover create, get, close, TTL eviction, and
+  LRU max-session enforcement using fake process context managers, all keyed
+  by binding key.
+- Stateful runtime tests mock `spawn_agent_process` and cover first-request
+  session creation, second-request delta resume, header-driven resume,
+  different first messages opening new sessions, missing-header fail-fast,
+  empty-delta errors, and lock-timeout errors.
 
 If the relevant CLIs are installed and authenticated, smoke-test through
 LiteLLM using `litellm_config.example.yaml` or a local config derived from it.

@@ -9,6 +9,23 @@ model_list:
       # Optional. When omitted, Auggie uses its local default model.
       # acp_model: gpt-5.5
 
+  - model_name: acp-auggie-stateful
+    litellm_params:
+      model: acp/auggie
+      # Reuse a long-lived ACP process per conversation. The opening
+      # system+user pair acts as the conversation identity.
+      acp_session_binding_strategy: prompt_hashing
+      acp_session_ttl_seconds: 1800
+      acp_max_sessions: 100
+      acp_session_lock_timeout_seconds: 30
+
+  - model_name: acp-auggie-stateful-header
+    litellm_params:
+      model: acp/auggie
+      # Use this when your client sends a stable conversation id header.
+      # Missing/empty header values fail fast with a clear error.
+      acp_session_binding_strategy: http_header/X-Hermes-Conversation-Id
+
 litellm_settings:
   custom_provider_map:
     - provider: acp
