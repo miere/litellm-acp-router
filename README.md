@@ -1,79 +1,62 @@
-# ACP Router for LiteLLM
+# LiteLLM ACP Router
 
-ACP Router lets OpenAI-compatible clients talk to ACP-based CLI agents through LiteLLM.
+`litellm-acp-router` is a LiteLLM custom provider for Agent Client Protocol
+(ACP) agents. It lets OpenAI-compatible clients call local ACP-capable CLI
+agents through the normal LiteLLM proxy.
 
-The project is currently **Kimi-first**. Internally, the router is adapter-based, so support for additional agents can be added later without changing the overall structure.
+The package currently includes adapters for:
 
-## What it does
-
-- accepts OpenAI-style requests through LiteLLM
-- routes them to an ACP-compatible CLI agent
-- keeps local setup simple
-- ships with a bundled LiteLLM config and launcher
-
-## Current scope
-
-Right now, the main supported path is:
-
-- **Kimi via ACP**
-
-The architecture is intentionally generic, but the initial release is focused on getting one path working well before expanding further.
+- Kimi via ACP (`kimi acp`)
+- Auggie via ACP (`auggie --acp`)
 
 ## Installation
 
-### Install this project
-
-This installs the project and its dependencies, including LiteLLM and the Agent Client Protocol SDK.
+Install the extension into the same Python environment where LiteLLM runs:
 
 ```bash
 pip install -e .
 ```
 
-### Install LiteLLM manually
+This installs LiteLLM proxy dependencies and the Agent Client Protocol SDK.
+You must still install and authenticate the underlying CLI agents you plan to
+use, such as `kimi` or `auggie`.
 
-If you want LiteLLM separately, make sure to install the proxy extras:
+## LiteLLM configuration
 
-```bash
-pip install "litellm[proxy]"
+Add the ACP provider to your LiteLLM config with `custom_provider_map`:
+
+```yaml
+litellm_settings:
+  custom_provider_map:
+    - provider: acp
+      custom_handler: litellm_acp_router.router.router_handler
 ```
 
-## Running the proxy
+Then expose one or more model aliases through `model_list`:
 
-After installing with `pip install -e .`, use the bundled launcher:
+```yaml
+model_list:
+  - model_name: acp-kimi
+    litellm_params:
+      model: acp/kimi
 
-```bash
-acp-router
+  - model_name: acp-auggie
+    litellm_params:
+      model: acp/auggie
 ```
 
-The launcher always points to this repository’s `litellm_config.yaml` using an absolute path, so it can be started from any directory.
+See `litellm_config.example.yaml` for a complete minimal example.
 
-### Optional overrides
+## Running LiteLLM
 
-You can still override the port, config path, or pass normal LiteLLM flags:
-
-```bash
-PORT=8080 acp-router
-LITELLM_CONFIG=/path/to/other.yaml acp-router
-acp-router --port 8080 --host 127.0.0.1
-```
-
-### Without the script entry point
-
-You can also run the bundled launcher directly:
+Run LiteLLM normally with your config file:
 
 ```bash
-python serve.py
+litellm --config /path/to/litellm.yaml
 ```
 
-## Running LiteLLM manually
-
-If you prefer to launch LiteLLM yourself:
-
-```bash
-litellm --config /full/path/to/acp_router/litellm_config.yaml
-```
-
-Use an **absolute** config path if your shell is not inside the project directory. This avoids module resolution issues and ensures LiteLLM can find the router module correctly.
+This project no longer provides a server launcher. LiteLLM owns the proxy
+process; this package only provides the custom ACP provider implementation.
 
 ## Example request
 
@@ -81,38 +64,94 @@ Use an **absolute** config path if your shell is not inside the project director
 curl -X POST http://127.0.0.1:4000/chat/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "acp-kimi",
+    "model": "acp-auggie",
     "messages": [
       {
         "role": "user",
-        "content": "Create a simple index.ts file"
+        "content": "Explain this repository"
       }
     ]
   }'
 ```
 
+## Auggie model selection
+
+Auggie can choose its own locally configured default model. To preserve that
+behavior, omit `acp_model`:
+
+```yaml
+model_list:
+  - model_name: acp-auggie
+    litellm_params:
+      model: acp/auggie
+```
+
+To pin an Auggie model from LiteLLM config, set the generic `acp_model`
+parameter:
+
+```yaml
+model_list:
+  - model_name: acp-auggie-gpt55
+    litellm_params:
+      model: acp/auggie
+      acp_model: gpt-5.5
+```
+
+The Auggie adapter turns this into `auggie --acp --model gpt-5.5`. Use
+`auggie models list` or `auggie models list --json` to confirm the exact model
+IDs available to your account.
+
+`acp_model` is intentionally generic so future adapters can reuse the same
+configuration key when they support model selection.
+
+## Adapter options
+
+The provider accepts several optional LiteLLM parameters:
+
+- `agent`: explicitly choose an adapter, such as `kimi` or `auggie`
+- `agent_bin`: override the executable path for any adapter
+- `<agent>_bin`: override one adapter executable, such as `auggie_bin`
+- `agent_args`: override all launch arguments
+- `<agent>_args`: override one adapter's launch arguments
+- `agent_mode_id` or `<agent>_mode_id`: set an ACP mode when supported
+- `bootstrap_commands` or `<agent>_bootstrap_commands`: run setup prompts
+- `acp_model`: select an underlying model when the adapter supports it
+- `permission_mode`: `auto_allow` by default, or `cancel`/`deny`/`reject`
+- `cwd`, `workspace_path`, `project_root`, or `root_dir`: choose session cwd
+- `mcp_servers`: pass MCP server definitions into the ACP session
+
+Environment variables are also supported for executable, args, and mode
+overrides using each adapter prefix, for example `KIMI_BIN`, `AUGGIE_BIN`, or
+`AUGGIE_ARGS`.
+
+## Architecture
+
+LiteLLM imports `litellm_acp_router.router.router_handler`, which is a
+`CustomLLM` instance. Requests flow through:
+
+1. LiteLLM resolves a configured model such as `acp/auggie`.
+2. `RouterHandler` normalizes the request into a text prompt.
+3. `Registry` selects an adapter from the `acp/<agent>` model name.
+4. The adapter builds an `AgentSpec` containing the CLI command and ACP setup.
+5. `Runtime` spawns the ACP agent process and streams assistant text back.
+
 ## Project structure
 
 ```text
-.
+litellm_acp_router/
 ├── adapters/
+│   ├── auggie.py
+│   ├── base.py
+│   ├── kimi.py
+│   └── static.py
 ├── client.py
 ├── registry.py
 ├── router.py
 ├── router_handler.py
 ├── runtime.py
 ├── schemas.py
-├── serve.py
-├── utils.py
-├── litellm_config.yaml
-└── pyproject.toml
+└── utils.py
 ```
-
-## Notes
-
-- the project is currently focused on **Kimi via ACP**
-- the router architecture is generic even though the first supported backend is Kimi
-- additional adapters can be added later without changing the external LiteLLM entrypoint
 
 ## License
 

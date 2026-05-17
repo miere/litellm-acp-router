@@ -1,0 +1,11 @@
+# Python
+*.pyc
+
+# IDEs
+.idea
+.project
+*.iml
+
+# Others
+.DS_Store
+
