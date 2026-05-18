@@ -198,6 +198,28 @@ class SessionManagerTests(unittest.TestCase):
 
         _run(go())
 
+    def test_create_zero_buffer_propagates_unbounded_sentinel(self) -> None:
+        from litellm_acp_router.runtime import UNBOUNDED_STDIO_BUFFER_BYTES
+
+        spawner, created = _make_spawner()
+        mgr = SessionManager(spawner=spawner)
+
+        async def go():
+            await mgr.create(
+                binding_key="key-buf-zero",
+                spec=_spec(),
+                model="acp/example",
+                acp_model=None,
+                cwd="/tmp/example",
+                options={"acp_stdio_buffer_bytes": 0},
+            )
+            self.assertEqual(
+                created[0][4].get("transport_kwargs"),
+                {"limit": UNBOUNDED_STDIO_BUFFER_BYTES},
+            )
+
+        _run(go())
+
 
 if __name__ == "__main__":
     unittest.main()

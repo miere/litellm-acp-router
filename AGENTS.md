@@ -131,14 +131,20 @@ Users can then configure LiteLLM with `model: acp/example`.
   `reasoning_content` field. Reasoning is intentionally excluded from
   `AgentClient.get_final_text()` so it does not enter the assistant transcript
   used by stateful resume or the non-streaming `acompletion` path.
-- `acp_stdio_buffer_bytes` (default `8 * 1024 * 1024`, i.e. 8 MiB) sets the
+- `acp_stdio_buffer_bytes` (default `64 * 1024 * 1024`, i.e. 64 MiB) sets the
   `asyncio.StreamReader` buffer used to read JSON-RPC frames from the agent's
   stdout. Threaded through both spawn sites via
   `transport_kwargs={"limit": N}` to `spawn_agent_process`. Resolved by
   `runtime.resolve_stdio_buffer_bytes`, which falls back to the default for
-  missing, non-numeric, or non-positive values. Raise it when large
-  `tool_call` frames (file diffs, terminal output, MCP responses) trigger
-  upstream `LimitOverrunError` and surface as `ConnectionError`.
+  missing, non-numeric, or negative values. Setting it to `0` selects an
+  effectively unbounded limit (`runtime.UNBOUNDED_STDIO_BUFFER_BYTES`,
+  `2**31 - 1`) for deployments that must accept arbitrarily large
+  `tool_call` frames (file diffs, terminal output, MCP responses). When the
+  upstream `acp` receive loop raises `LimitOverrunError` (logged as
+  `"Receive loop failed"`) and the resulting `ConnectionError` propagates
+  out of a turn, the runtime wraps it into a `ConnectionError` whose message
+  explicitly names `acp_stdio_buffer_bytes` and the `0`-means-unlimited
+  remediation, preserving the original via `__cause__`.
 - Adapter-specific binary, args, mode, and bootstrap overrides use existing
   keys such as `<agent>_bin`, `<agent>_args`, `<agent>_mode_id`, and
   `<agent>_bootstrap_commands`.

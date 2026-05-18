@@ -2,8 +2,9 @@ import asyncio
 import logging
 import os
 import time
+from collections import deque
 from pathlib import Path
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Deque, Dict, List, Optional, Tuple
 
 from acp import spawn_agent_process, text_block
 from litellm.types.utils import GenericStreamingChunk
@@ -24,9 +25,16 @@ LOG = logging.getLogger(__name__)
 # Default StreamReader buffer for the ACP stdio transport. The upstream acp
 # package falls back to asyncio's 64 KiB default, which is easily overrun by a
 # single tool_call frame carrying file diffs or terminal output and crashes the
-# receive loop with LimitOverrunError. 8 MiB gives ample headroom while keeping
-# the per-process memory ceiling bounded.
-DEFAULT_STDIO_BUFFER_BYTES = 8 * 1024 * 1024
+# receive loop with LimitOverrunError. 64 MiB gives ample headroom for large
+# diffs, terminal dumps, and MCP responses while keeping the per-process memory
+# ceiling bounded. Operators can override via the acp_stdio_buffer_bytes
+# option; setting it to 0 disables the practical limit (see
+# UNBOUNDED_STDIO_BUFFER_BYTES).
+DEFAULT_STDIO_BUFFER_BYTES = 64 * 1024 * 1024
+# Effectively-unbounded StreamReader limit. asyncio.StreamReader requires a
+# positive integer for `limit`; 2**31 - 1 (~2 GiB) is far beyond any realistic
+# JSON-RPC frame and avoids LimitOverrunError for pathological agent output.
+UNBOUNDED_STDIO_BUFFER_BYTES = 2**31 - 1
 
 
 def resolve_stdio_buffer_bytes(options: Dict[str, Any]) -> int:
@@ -37,9 +45,108 @@ def resolve_stdio_buffer_bytes(options: Dict[str, Any]) -> int:
         value = int(raw)
     except (TypeError, ValueError):
         return DEFAULT_STDIO_BUFFER_BYTES
-    if value <= 0:
+    if value == 0:
+        return UNBOUNDED_STDIO_BUFFER_BYTES
+    if value < 0:
         return DEFAULT_STDIO_BUFFER_BYTES
     return value
+
+
+# Diagnostic ring buffer for receive-loop overruns. The upstream acp package's
+# receive loop logs "Receive loop failed" to the root logger with exc_info when
+# asyncio.StreamReader raises LimitOverrunError (the chained ValueError in
+# Python 3.13's streams.readline). The receive loop then completes all pending
+# requests with a generic ConnectionError("Connection closed"), which gives the
+# operator no hint that the cure is to raise acp_stdio_buffer_bytes. We snoop
+# the log record and remember the most recent overrun so the runtime can wrap
+# the resulting ConnectionError with an actionable message.
+_OVERRUN_EVENT_WINDOW_SECONDS = 30.0
+_OVERRUN_EVENTS: Deque[Tuple[float, str]] = deque(maxlen=32)
+_OVERRUN_MARKER = "Separator is found, but chunk is longer than limit"
+
+
+def _is_limit_overrun_exc(exc: Optional[BaseException]) -> bool:
+    if exc is None:
+        return False
+    if isinstance(exc, asyncio.LimitOverrunError):
+        return True
+    # Python 3.13's StreamReader.readline re-raises LimitOverrunError as
+    # ValueError(e.args[0]); the original is chained via __context__.
+    if isinstance(exc, ValueError) and _OVERRUN_MARKER in str(exc):
+        return True
+    return _is_limit_overrun_exc(exc.__context__) or _is_limit_overrun_exc(
+        exc.__cause__
+    )
+
+
+class _ReceiveLoopOverrunFilter(logging.Filter):
+    """Records LimitOverrunError occurrences from acp's receive loop.
+
+    Always returns True so the underlying log record is still emitted; the
+    filter is only used as a passive observer.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if record.getMessage() != "Receive loop failed":
+                return True
+            exc_info = record.exc_info
+            if not exc_info:
+                return True
+            _, exc, _ = exc_info
+            if _is_limit_overrun_exc(exc):
+                _OVERRUN_EVENTS.append((time.monotonic(), str(exc)))
+        except Exception:  # pragma: no cover - never break logging
+            pass
+        return True
+
+
+_OVERRUN_FILTER = _ReceiveLoopOverrunFilter()
+_OVERRUN_FILTER_INSTALLED = False
+
+
+def _install_receive_loop_filter() -> None:
+    global _OVERRUN_FILTER_INSTALLED
+    if _OVERRUN_FILTER_INSTALLED:
+        return
+    logging.getLogger().addFilter(_OVERRUN_FILTER)
+    _OVERRUN_FILTER_INSTALLED = True
+
+
+_install_receive_loop_filter()
+
+
+def _recent_overrun_event(
+    window_seconds: float = _OVERRUN_EVENT_WINDOW_SECONDS,
+) -> Optional[Tuple[float, str]]:
+    if not _OVERRUN_EVENTS:
+        return None
+    ts, msg = _OVERRUN_EVENTS[-1]
+    if (time.monotonic() - ts) > window_seconds:
+        return None
+    return ts, msg
+
+
+def _wrap_connection_error_if_overrun(exc: BaseException) -> BaseException:
+    """If exc is a ConnectionError coincident with a recent receive-loop
+    overrun, return a new ConnectionError with an actionable message; else
+    return exc unchanged. The original exception is preserved via __cause__.
+    """
+    if not isinstance(exc, ConnectionError):
+        return exc
+    event = _recent_overrun_event()
+    if event is None:
+        return exc
+    _, original_msg = event
+    wrapped = ConnectionError(
+        "ACP receive loop failed: the agent emitted a JSON-RPC frame larger "
+        "than the configured stdio buffer "
+        "(acp_stdio_buffer_bytes). Increase acp_stdio_buffer_bytes, or set it "
+        "to 0 for no practical limit, then retry. "
+        f"Underlying error: {original_msg}"
+    )
+    wrapped.__cause__ = exc
+    return wrapped
 
 
 def _event_to_chunk(event: Dict[str, Any]) -> Optional[GenericStreamingChunk]:
@@ -151,6 +258,10 @@ class Runtime:
         client = AgentClient(
             permission_mode=permission_mode,
             emit_tool_activity=emit_tool_activity,
+            tool_narrator=spec.tool_narrator,
+            text_filter=(
+                spec.text_filter_factory() if spec.text_filter_factory else None
+            ),
         )
 
         async with spawn_agent_process(
@@ -190,7 +301,9 @@ class Runtime:
             try:
                 while True:
                     if prompt_task.done() and client.queue.empty():
-                        break
+                        await client.flush_text_filter()
+                        if client.queue.empty():
+                            break
 
                     try:
                         event = await asyncio.wait_for(client.queue.get(), timeout=0.1)
@@ -203,6 +316,11 @@ class Runtime:
 
                 await prompt_task
 
+            except Exception as exc:
+                wrapped = _wrap_connection_error_if_overrun(exc)
+                if wrapped is not exc:
+                    raise wrapped from exc
+                raise
             finally:
                 if not prompt_task.done():
                     prompt_task.cancel()
@@ -325,7 +443,9 @@ class Runtime:
         try:
             while True:
                 if prompt_task.done() and client.queue.empty():
-                    break
+                    await client.flush_text_filter()
+                    if client.queue.empty():
+                        break
                 try:
                     event = await asyncio.wait_for(client.queue.get(), timeout=0.1)
                 except asyncio.TimeoutError:
@@ -345,6 +465,9 @@ class Runtime:
             await self.session_manager.close(
                 session.binding_key, reason="prompt_error"
             )
+            wrapped = _wrap_connection_error_if_overrun(exc)
+            if wrapped is not exc:
+                raise wrapped from exc
             raise
         finally:
             if not prompt_task.done():

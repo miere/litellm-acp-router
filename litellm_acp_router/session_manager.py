@@ -78,6 +78,10 @@ class SessionManager:
         client = AgentClient(
             permission_mode=permission_mode,
             emit_tool_activity=emit_tool_activity,
+            tool_narrator=spec.tool_narrator,
+            text_filter=(
+                spec.text_filter_factory() if spec.text_filter_factory else None
+            ),
         )
         process_cm = self._spawner(
             client,

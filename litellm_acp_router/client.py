@@ -1,8 +1,9 @@
 import asyncio
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from acp.interfaces import Client
 
+from .schemas import TextFilter, ToolNarrator
 from .utils import pick_permission_option
 
 
@@ -11,12 +12,16 @@ class AgentClient(Client):
         self,
         permission_mode: str = "auto_allow",
         emit_tool_activity: bool = True,
+        tool_narrator: Optional[ToolNarrator] = None,
+        text_filter: Optional[TextFilter] = None,
     ) -> None:
         self.queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
         self.final_text_parts: List[str] = []
         self.suppress_stream = False
         self.permission_mode = permission_mode.strip().lower()
         self.emit_tool_activity = bool(emit_tool_activity)
+        self.tool_narrator = tool_narrator
+        self.text_filter = text_filter
 
     async def request_permission(
         self, options, session_id=None, tool_call=None, **kwargs: Any
@@ -62,6 +67,10 @@ class AgentClient(Client):
             if text:
                 if self.suppress_stream:
                     return
+                if self.text_filter is not None:
+                    text = self.text_filter.feed(text)
+                    if not text:
+                        return
                 self.final_text_parts.append(text)
                 await self.queue.put({"kind": "assistant_text", "text": text})
             return
@@ -74,31 +83,31 @@ class AgentClient(Client):
                 await self.queue.put({"kind": "assistant_text", "text": text})
             return
 
-        if update_kind == "tool_call_update":
-            if self.suppress_stream or not self.emit_tool_activity:
-                return
-            text = self._format_tool_call_update(data)
-            if text:
-                await self.queue.put({"kind": "assistant_text", "text": text})
-            return
+        # tool_call_update events are intentionally not narrated: status flips
+        # (completed/failed) would produce duplicate "done" lines and the
+        # adapter-supplied narrator only formats the initial tool_call.
 
     def _format_tool_call_start(self, data: Dict[str, Any]) -> str:
+        # Adapters opt in to tool narration by supplying a tool_narrator. When
+        # none is provided (e.g. KimiAdapter) tool activity is silent.
+        if self.tool_narrator is None:
+            return ""
         title = self._read_string(data, "title")
         if not title:
             return ""
         kind = self._read_string(data, "kind")
-        label = f"[{kind}] {title}" if kind else title
-        return f"\n\n> {label}\n\n"
+        result = self.tool_narrator(kind, title)
+        return result or ""
 
-    def _format_tool_call_update(self, data: Dict[str, Any]) -> str:
-        status = self._read_string(data, "status").lower()
-        if status not in ("completed", "failed"):
-            return ""
-        title = self._read_string(data, "title")
-        if not title:
-            return ""
-        suffix = "done" if status == "completed" else "failed"
-        return f"\n\n> {title} \u2014 {suffix}\n\n"
+    async def flush_text_filter(self) -> None:
+        # Drain any text the filter held back across chunk boundaries (e.g. a
+        # partial XML tag whose closing '>' never arrived) at end-of-turn.
+        if self.text_filter is None:
+            return
+        remaining = self.text_filter.flush()
+        if remaining:
+            self.final_text_parts.append(remaining)
+            await self.queue.put({"kind": "assistant_text", "text": remaining})
 
     @staticmethod
     def _read_string(data: Dict[str, Any], key: str) -> str:

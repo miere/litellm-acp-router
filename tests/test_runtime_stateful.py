@@ -265,6 +265,130 @@ class StatefulRuntimeTests(unittest.TestCase):
             {"limit": 4 * 1024 * 1024},
         )
 
+    def test_stateful_spawn_zero_buffer_uses_unbounded_sentinel(self) -> None:
+        from litellm_acp_router.runtime import UNBOUNDED_STDIO_BUFFER_BYTES
+
+        spawner, created = _make_spawner()
+        runtime = Runtime(session_manager=SessionManager(spawner=spawner))
+
+        messages = [{"role": "user", "content": "hello"}]
+        kw = _kwargs(messages)
+        kw["optional_params"]["acp_stdio_buffer_bytes"] = 0
+
+        asyncio.run(_drain(runtime, messages, kwargs_override=kw))
+
+        self.assertEqual(
+            created[0].spawn_kwargs.get("transport_kwargs"),
+            {"limit": UNBOUNDED_STDIO_BUFFER_BYTES},
+        )
+
+
+class ResolveStdioBufferBytesTests(unittest.TestCase):
+    def test_default_is_64_mib(self) -> None:
+        from litellm_acp_router.runtime import DEFAULT_STDIO_BUFFER_BYTES
+
+        self.assertEqual(DEFAULT_STDIO_BUFFER_BYTES, 64 * 1024 * 1024)
+
+    def test_missing_returns_default(self) -> None:
+        from litellm_acp_router.runtime import (
+            DEFAULT_STDIO_BUFFER_BYTES,
+            resolve_stdio_buffer_bytes,
+        )
+
+        self.assertEqual(resolve_stdio_buffer_bytes({}), DEFAULT_STDIO_BUFFER_BYTES)
+
+    def test_zero_returns_unbounded_sentinel(self) -> None:
+        from litellm_acp_router.runtime import (
+            UNBOUNDED_STDIO_BUFFER_BYTES,
+            resolve_stdio_buffer_bytes,
+        )
+
+        self.assertEqual(
+            resolve_stdio_buffer_bytes({"acp_stdio_buffer_bytes": 0}),
+            UNBOUNDED_STDIO_BUFFER_BYTES,
+        )
+
+    def test_negative_returns_default(self) -> None:
+        from litellm_acp_router.runtime import (
+            DEFAULT_STDIO_BUFFER_BYTES,
+            resolve_stdio_buffer_bytes,
+        )
+
+        self.assertEqual(
+            resolve_stdio_buffer_bytes({"acp_stdio_buffer_bytes": -1}),
+            DEFAULT_STDIO_BUFFER_BYTES,
+        )
+
+    def test_non_numeric_returns_default(self) -> None:
+        from litellm_acp_router.runtime import (
+            DEFAULT_STDIO_BUFFER_BYTES,
+            resolve_stdio_buffer_bytes,
+        )
+
+        self.assertEqual(
+            resolve_stdio_buffer_bytes({"acp_stdio_buffer_bytes": "huge"}),
+            DEFAULT_STDIO_BUFFER_BYTES,
+        )
+
+    def test_positive_value_is_passed_through(self) -> None:
+        from litellm_acp_router.runtime import resolve_stdio_buffer_bytes
+
+        self.assertEqual(
+            resolve_stdio_buffer_bytes({"acp_stdio_buffer_bytes": 12345}),
+            12345,
+        )
+
+
+class ReceiveLoopOverrunDiagnosticTests(unittest.TestCase):
+    def _log_overrun(self) -> None:
+        import logging
+
+        from litellm_acp_router import runtime as rt
+
+        rt._OVERRUN_EVENTS.clear()
+        try:
+            raise asyncio.LimitOverrunError(
+                "Separator is found, but chunk is longer than limit", 999
+            )
+        except asyncio.LimitOverrunError:
+            logging.getLogger().error("Receive loop failed", exc_info=True)
+
+    def test_filter_records_limit_overrun_from_acp_log(self) -> None:
+        from litellm_acp_router import runtime as rt
+
+        self._log_overrun()
+        event = rt._recent_overrun_event()
+        self.assertIsNotNone(event)
+        self.assertIn("longer than limit", event[1])
+
+    def test_connection_error_after_overrun_is_wrapped(self) -> None:
+        from litellm_acp_router import runtime as rt
+
+        class _FailConn(_FakeConn):
+            async def prompt(self, session_id, prompt):
+                raise ConnectionError("Connection closed")
+
+        class _FailCM(_FakeProcessCM):
+            def __init__(self, client) -> None:
+                super().__init__(client)
+                self.conn = _FailConn(client)
+
+        def spawn(client, command, *args, **kwargs):
+            cm = _FailCM(client)
+            cm.spawn_kwargs = kwargs
+            return cm
+
+        runtime = Runtime(session_manager=SessionManager(spawner=spawn))
+        self._log_overrun()
+
+        with self.assertRaises(ConnectionError) as ctx:
+            asyncio.run(_drain(runtime, [{"role": "user", "content": "hi"}]))
+
+        msg = str(ctx.exception)
+        self.assertIn("acp_stdio_buffer_bytes", msg)
+        self.assertIsInstance(ctx.exception.__cause__, ConnectionError)
+        rt._OVERRUN_EVENTS.clear()
+
 
 class EventToChunkTests(unittest.TestCase):
     def test_reasoning_event_maps_to_provider_specific_fields(self) -> None:

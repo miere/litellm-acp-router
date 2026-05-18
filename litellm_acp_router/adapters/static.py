@@ -1,7 +1,7 @@
 import os
 from typing import Any, Dict, List, Optional
 
-from litellm_acp_router.schemas import AgentSpec
+from litellm_acp_router.schemas import AgentSpec, TextFilterFactory, ToolNarrator
 from litellm_acp_router.utils import coerce_list
 
 from .base import Adapter
@@ -20,6 +20,8 @@ class StaticAdapter(Adapter):
         acp_model_arg: Optional[str] = None,
         acp_workspace_arg: Optional[str] = None,
         default_workspace_dir: Optional[str] = None,
+        tool_narrator: Optional[ToolNarrator] = None,
+        text_filter_factory: Optional[TextFilterFactory] = None,
     ) -> None:
         self.agent_id = agent_id.strip().lower()
         self.default_bin = default_bin
@@ -31,6 +33,8 @@ class StaticAdapter(Adapter):
         self.acp_model_arg = acp_model_arg
         self.acp_workspace_arg = acp_workspace_arg
         self.default_workspace_dir = default_workspace_dir
+        self.tool_narrator = tool_narrator
+        self.text_filter_factory = text_filter_factory
 
     def build_spec(self, optional_params: Dict[str, Any]) -> AgentSpec:
         bin_value = (
@@ -83,4 +87,6 @@ class StaticAdapter(Adapter):
             args=[str(x) for x in args],
             mode_id=str(mode_id) if mode_id else None,
             bootstrap_commands=[str(x) for x in bootstrap_commands],
+            tool_narrator=self.tool_narrator,
+            text_filter_factory=self.text_filter_factory,
         )
