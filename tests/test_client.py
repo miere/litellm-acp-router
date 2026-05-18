@@ -255,5 +255,104 @@ class AuggieTextFilterTests(unittest.TestCase):
         self.assertEqual(emitted2, "ok ")
 
 
+class ToolToMessageSeparatorTests(unittest.TestCase):
+    """A tool narration immediately followed by an assistant message gets a
+    single leading "\\n" prepended to the queued message chunk so the two
+    visually separate. The separator is display-only and must not leak into
+    final_text_parts (used for stateful resume / acompletion transcripts)."""
+
+    def _tool_call(self, client: AgentClient, title: str, kind: str = "execute"):
+        return client.session_update(
+            session_id="s1",
+            update={
+                "sessionUpdate": "tool_call",
+                "toolCallId": "tc",
+                "title": title,
+                "kind": kind,
+            },
+        )
+
+    def _message(self, client: AgentClient, text: str):
+        return client.session_update(
+            session_id="s1",
+            update={
+                "sessionUpdate": "agent_message_chunk",
+                "content": {"type": "text", "text": text},
+            },
+        )
+
+    def _reasoning(self, client: AgentClient, text: str):
+        return client.session_update(
+            session_id="s1",
+            update={
+                "sessionUpdate": "agent_thought_chunk",
+                "content": {"type": "text", "text": text},
+            },
+        )
+
+    def test_tool_then_message_prepends_newline_to_message(self) -> None:
+        client = AgentClient(tool_narrator=auggie_tool_narrator)
+        _run(self._tool_call(client, "Run npm install"))
+        _run(self._message(client, "All done."))
+        items = _drain(client)
+        self.assertEqual(items[1]["text"], "\nAll done.")
+        # final_text_parts stays clean — separator is display-only.
+        self.assertEqual(client.get_final_text(), "All done.")
+
+    def test_tool_tool_message_only_last_message_gets_separator(self) -> None:
+        client = AgentClient(tool_narrator=auggie_tool_narrator)
+        _run(self._tool_call(client, "first"))
+        _run(self._tool_call(client, "second"))
+        _run(self._message(client, "ok"))
+        items = _drain(client)
+        # Both tool narrations queued as-is, no separator between them.
+        self.assertFalse(items[0]["text"].startswith("\n"))
+        self.assertFalse(items[1]["text"].startswith("\n"))
+        # Message gets exactly one leading "\n".
+        self.assertEqual(items[2]["text"], "\nok")
+
+    def test_tool_with_no_following_message_emits_no_spurious_newline(self) -> None:
+        client = AgentClient(tool_narrator=auggie_tool_narrator)
+        _run(self._tool_call(client, "lonely"))
+        items = _drain(client)
+        self.assertEqual(len(items), 1)
+        self.assertFalse(items[0]["text"].startswith("\n"))
+        self.assertEqual(client.get_final_text(), "")
+
+    def test_reasoning_between_tool_and_message_clears_separator(self) -> None:
+        client = AgentClient(tool_narrator=auggie_tool_narrator)
+        _run(self._tool_call(client, "Run npm install"))
+        _run(self._reasoning(client, "considering"))
+        _run(self._message(client, "Here we go."))
+        items = _drain(client)
+        # Message has no leading separator because reasoning broke adjacency.
+        message_item = items[-1]
+        self.assertEqual(message_item["kind"], "assistant_text")
+        self.assertEqual(message_item["text"], "Here we go.")
+
+    def test_message_tool_message_second_message_gets_separator(self) -> None:
+        client = AgentClient(tool_narrator=auggie_tool_narrator)
+        _run(self._message(client, "intro"))
+        _run(self._tool_call(client, "Run npm install"))
+        _run(self._message(client, "outro"))
+        items = _drain(client)
+        self.assertEqual(items[0]["text"], "intro")
+        self.assertEqual(items[2]["text"], "\noutro")
+
+    def test_reset_turn_state_clears_pending_separator(self) -> None:
+        # Simulates a stateful client reused across turns: the previous turn
+        # ended on a tool narration. Without reset_turn_state, the first
+        # message of the next turn would inherit a spurious leading "\n".
+        client = AgentClient(tool_narrator=auggie_tool_narrator)
+        _run(self._tool_call(client, "trailing tool of prev turn"))
+        _drain(client)  # caller already drained the queue at turn end.
+        self.assertTrue(client._last_was_tool_narration)
+        client.reset_turn_state()
+        self.assertFalse(client._last_was_tool_narration)
+        _run(self._message(client, "fresh turn message"))
+        items = _drain(client)
+        self.assertEqual(items[0]["text"], "fresh turn message")
+
+
 if __name__ == "__main__":
     unittest.main()

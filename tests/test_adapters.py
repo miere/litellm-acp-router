@@ -1,21 +1,43 @@
+import os
 import unittest
+from unittest.mock import patch
 
 from litellm_acp_router.adapters import AuggieAdapter, KimiAdapter
 from litellm_acp_router.registry import Registry
 
 
+_AUGGIE_ENV_CLEAR = {
+    k: v for k, v in os.environ.items() if not k.startswith("AUGGIE_")
+}
+
+
 class AdapterTests(unittest.TestCase):
     def test_auggie_omits_model_flag_by_default(self) -> None:
-        spec = AuggieAdapter().build_spec({})
+        with patch.dict(os.environ, _AUGGIE_ENV_CLEAR, clear=True):
+            spec = AuggieAdapter().build_spec({})
 
         self.assertEqual(spec.bin, "auggie")
-        self.assertEqual(spec.args, ["--acp"])
+        self.assertEqual(
+            spec.args,
+            ["--acp", "--allow-indexing", "--workspace-root", "/tmp/auggie-empty"],
+        )
         self.assertIsNone(spec.mode_id)
 
     def test_auggie_uses_generic_acp_model_parameter(self) -> None:
-        spec = AuggieAdapter().build_spec({"acp_model": "gpt-5.5"})
+        with patch.dict(os.environ, _AUGGIE_ENV_CLEAR, clear=True):
+            spec = AuggieAdapter().build_spec({"acp_model": "gpt-5.5"})
 
-        self.assertEqual(spec.args, ["--acp", "--model", "gpt-5.5"])
+        self.assertEqual(
+            spec.args,
+            [
+                "--acp",
+                "--allow-indexing",
+                "--model",
+                "gpt-5.5",
+                "--workspace-root",
+                "/tmp/auggie-empty",
+            ],
+        )
 
     def test_kimi_defaults_are_unchanged(self) -> None:
         spec = KimiAdapter().build_spec({})

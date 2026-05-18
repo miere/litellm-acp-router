@@ -22,6 +22,17 @@ class AgentClient(Client):
         self.emit_tool_activity = bool(emit_tool_activity)
         self.tool_narrator = tool_narrator
         self.text_filter = text_filter
+        # Set to True after a tool narration is queued so the next assistant
+        # message chunk receives a leading "\n" separator. Reset by any
+        # non-tool emission, by reset_turn_state() between stateful turns, and
+        # whenever the separator is consumed.
+        self._last_was_tool_narration = False
+
+    def reset_turn_state(self) -> None:
+        # Called at the start of every stateful turn so flags that track
+        # inter-event adjacency (e.g. tool-narration → message separator) do
+        # not leak across turn boundaries on a reused client.
+        self._last_was_tool_narration = False
 
     async def request_permission(
         self, options, session_id=None, tool_call=None, **kwargs: Any
@@ -56,9 +67,12 @@ class AgentClient(Client):
                 return
             text = self._content_block_to_text(data.get("content"))
             if text:
-                # Reasoning is intentionally not appended to final_text_parts so
-                # it does not pollute the assistant transcript captured for the
-                # non-streaming acompletion path or for stateful history.
+                # Reasoning interrupts a tool-block → message adjacency, so
+                # clear the separator flag here. Reasoning is intentionally
+                # not appended to final_text_parts so it does not pollute the
+                # assistant transcript captured for the non-streaming
+                # acompletion path or for stateful history.
+                self._last_was_tool_narration = False
                 await self.queue.put({"kind": "reasoning", "text": text})
             return
 
@@ -71,8 +85,15 @@ class AgentClient(Client):
                     text = self.text_filter.feed(text)
                     if not text:
                         return
+                # Tool-block → message separator: a leading "\n" is prepended
+                # to the queued chunk only (NOT to final_text_parts) so the
+                # model-facing transcript stays free of display-only spacing.
+                queued_text = text
+                if self._last_was_tool_narration:
+                    queued_text = "\n" + queued_text
+                    self._last_was_tool_narration = False
                 self.final_text_parts.append(text)
-                await self.queue.put({"kind": "assistant_text", "text": text})
+                await self.queue.put({"kind": "assistant_text", "text": queued_text})
             return
 
         if update_kind == "tool_call":
@@ -81,6 +102,7 @@ class AgentClient(Client):
             text = self._format_tool_call_start(data)
             if text:
                 await self.queue.put({"kind": "assistant_text", "text": text})
+                self._last_was_tool_narration = True
             return
 
         # tool_call_update events are intentionally not narrated: status flips
@@ -106,8 +128,12 @@ class AgentClient(Client):
             return
         remaining = self.text_filter.flush()
         if remaining:
+            queued_text = remaining
+            if self._last_was_tool_narration:
+                queued_text = "\n" + queued_text
+                self._last_was_tool_narration = False
             self.final_text_parts.append(remaining)
-            await self.queue.put({"kind": "assistant_text", "text": remaining})
+            await self.queue.put({"kind": "assistant_text", "text": queued_text})
 
     @staticmethod
     def _read_string(data: Dict[str, Any], key: str) -> str:

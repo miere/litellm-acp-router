@@ -433,6 +433,10 @@ class Runtime:
     ) -> AsyncIterator[GenericStreamingChunk]:
         conn = session.conn
         client = session.client
+        # Reset per-turn flags on the reused client so display-only state from
+        # the previous turn (e.g. trailing tool-narration separator) does not
+        # leak into the start of this turn.
+        client.reset_turn_state()
         prompt_task = asyncio.create_task(
             conn.prompt(
                 session_id=session.acp_session_id,
