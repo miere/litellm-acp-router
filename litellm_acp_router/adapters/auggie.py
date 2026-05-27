@@ -102,8 +102,6 @@ class AuggieAdapter(StaticAdapter):
             aliases=["augment", "augment-code"],
             env_var_prefix="AUGGIE",
             acp_model_arg="--model",
-            acp_workspace_arg="--workspace-root",
-            default_workspace_dir="/tmp/auggie-empty",
             tool_narrator=auggie_tool_narrator,
             text_filter_factory=AuggieTextFilter,
         )

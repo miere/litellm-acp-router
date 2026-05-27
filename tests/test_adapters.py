@@ -19,7 +19,7 @@ class AdapterTests(unittest.TestCase):
         self.assertEqual(spec.bin, "auggie")
         self.assertEqual(
             spec.args,
-            ["--acp", "--allow-indexing", "--workspace-root", "/tmp/auggie-empty"],
+            ["--acp", "--allow-indexing"],
         )
         self.assertIsNone(spec.mode_id)
 
@@ -34,8 +34,6 @@ class AdapterTests(unittest.TestCase):
                 "--allow-indexing",
                 "--model",
                 "gpt-5.5",
-                "--workspace-root",
-                "/tmp/auggie-empty",
             ],
         )
 

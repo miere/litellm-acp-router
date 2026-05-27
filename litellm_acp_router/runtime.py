@@ -192,11 +192,14 @@ class Runtime:
         """Match reference handler: explicit cwd metadata first, then infer from paths in messages."""
         optional_params = kwargs.get("optional_params", {}) or {}
         metadata = kwargs.get("metadata") or optional_params.get("metadata") or {}
+        
+        import logging
+        logging.getLogger(__name__).warning("resolve_cwd: optional_params=%s metadata=%s", optional_params.keys(), metadata.keys())
 
         for source in (optional_params, metadata):
             if not isinstance(source, dict):
                 continue
-            for key in ("cwd", "workspace_path", "project_root", "root_dir", "path"):
+            for key in ("cwd", "workspace_path", "project_root", "root_dir", "path", "acp_workspace_dir"):
                 value = source.get(key)
                 if isinstance(value, str) and value.strip():
                     p = Path(value).expanduser()
